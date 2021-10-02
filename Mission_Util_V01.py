@@ -1,8 +1,11 @@
-from os import sep
+import re
+from os import sep, path
+from traceback import format_exc
 import tkinter as tk
 from tkinter import ttk
-from tkinter.messagebox import showinfo
+from tkinter.messagebox import showinfo, showerror
 from tkinter.scrolledtext import ScrolledText
+from tkinter.filedialog import askopenfilename
 
 # Game takes vanillas based on their index in this list, so no touchy
 VANILLAS = [
@@ -22,7 +25,33 @@ VANILLAS = [
         "NeedyVentGas",
         "NeedyCapacitor",
         "NeedyKnob"]
-    
+
+DMG_LINE_TYPES = {
+    r"^\/\/\/\/ (.*?)$": "name",
+    r"^\/\/\/ (.*?)$": "description",
+    r"^((\d+):)?(\d+):(\d+)$": "time_limit",
+    r"^(\d+)X$": "strikes",
+    r"^needyactivationtime:(\d+)$": "needy_activation_time",
+    r"^widgets:(\d+)$": "widgets",
+    r"^!?((\d+)\s?\*\s?)?(.*?)$": "modules"
+}
+
+DMG_IGNORE = ["room:", "factory:", "mode:"]    #Ignore these as there are no such fields in a mission asset
+
+
+DMG_TOGGLABLES = {    #Values for checkboxes (DMG_Line: (key, value))
+	"frontonly": ("front_only", 1),
+	"nopacing": ("pacing", 0)
+}
+
+def change_text(widget, text):
+    try:    #ScrolledText
+        widget.delete("1.0", tk.END)
+        widget.insert("1.0", text)
+    except tk.TclError:    #Bad entry index - Entry
+        widget.delete(0, tk.END)
+        widget.insert(0, text)
+
 class AssetFile:
 
     # default settings/variable init
@@ -30,7 +59,7 @@ class AssetFile:
 
         self.iden = "mission"
         self.name = "Mission"
-        self.desciption = "a mission"
+        self.description = "a mission"
         self.time_limit = "300"
         self.strikes = "3"
         self.needy_activation_time = "90"
@@ -47,7 +76,7 @@ class AssetFile:
         # takes all of the inputted info and puts it into AssetFile's variables if they weren't left blank
         self.iden = iden.strip() if iden.strip() != "" else self.iden
         self.name = name.strip() if name.strip() != "" else self.name
-        self.desciption = description.strip() if "\'{}\'".format(description.strip()) != "" else self.desciption
+        self.description = description.strip() if "\'{}\'".format(description.strip()) != "" else self.description
         self.time_limit = time_limit.strip() if time_limit.strip() != "" else self.time_limit
         self.strikes = strikes.strip() if strikes.strip() != "" else self.strikes
         self.needy_activation_time = needy_activation_time.strip() if needy_activation_time.strip() != "" else self.needy_activation_time
@@ -61,7 +90,7 @@ class AssetFile:
         if not self.sanity():
             return False
         # string of pain, the whole asset file before the modlist is written here
-        retstring = "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n--- !u!114 &11400000\nMonoBehaviour:\n  m_ObjectHideFlags: 0\n  m_PrefabParentObject: {{fileID: 0}}\n  m_PrefabInternal: {{fileID: 0}}\n  m_GameObject: {{fileID: 0}}\n  m_Enabled: 1\n  m_EditorHideFlags: 0\n  m_Script: {{fileID: -548183353, guid: 45b809be76fd7a3468b6f517bced6f28, type: 3}}\n  m_Name: {}\n  m_EditorClassIdentifier: {}\n  DisplayName: {}\n  Description: {}\n  GeneratorSetting:\n    TimeLimit: {}\n    NumStrikes: {}\n    TimeBeforeNeedyActivation: {}\n    FrontFaceOnly: {}\n    OptionalWidgetCount: {}\n    ComponentPools:".format(self.iden, self.iden, self.name, self.desciption, self.time_limit, self.strikes, self.needy_activation_time, str(self.front_only), self.widgets)
+        retstring = "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n--- !u!114 &11400000\nMonoBehaviour:\n  m_ObjectHideFlags: 0\n  m_PrefabParentObject: {{fileID: 0}}\n  m_PrefabInternal: {{fileID: 0}}\n  m_GameObject: {{fileID: 0}}\n  m_Enabled: 1\n  m_EditorHideFlags: 0\n  m_Script: {{fileID: -548183353, guid: 45b809be76fd7a3468b6f517bced6f28, type: 3}}\n  m_Name: {}\n  m_EditorClassIdentifier: {}\n  DisplayName: {}\n  Description: {}\n  GeneratorSetting:\n    TimeLimit: {}\n    NumStrikes: {}\n    TimeBeforeNeedyActivation: {}\n    FrontFaceOnly: {}\n    OptionalWidgetCount: {}\n    ComponentPools:".format(self.iden, self.iden, self.name, self.description, self.time_limit, self.strikes, self.needy_activation_time, str(self.front_only), self.widgets)
         modlist = self.modules.split(self.separator)
         for i in range(len(modlist)):
             count = 1   # how many of current module there is 
@@ -71,8 +100,9 @@ class AssetFile:
             # this counts modules if more than one
             # example 2*module would set count to 2 and then continue with everything after 2*
             if "*" in modlist[i]:
-                count = modlist[i][0]
-                modlist[i] = modlist[i][2:]
+                ind = modlist[i].index("*")
+                count = modlist[i][:ind]
+                modlist[i] = modlist[i][ind+1:]
             # this removes the formatting of [] around pools
             if "[" in modlist[i]:
                 modlist[i] = modlist[i][1:-1]
@@ -149,11 +179,11 @@ class Gui(tk.Tk):
         time_limit = tk.StringVar()
         strikes = tk.StringVar()
         needy_activation_time = tk.StringVar()
-        front_only = tk.StringVar(value=0)
+        self.front_only = tk.StringVar(value=0)
         widgets = tk.StringVar()
         #modules = tk.StringVar()
         separator = tk.StringVar()
-        pacing = tk.StringVar(value=0)
+        self.pacing = tk.StringVar(value=0)
 
         # using tk's grid functionality as it's very nice compared to other options
         # column 0 is for names while 1 is for inputs
@@ -165,51 +195,51 @@ class Gui(tk.Tk):
         # sticky="WE" means it fills it's whole grid location left to right (west to east)
         iden_label = ttk.Label(self, text="Mission ID:")
         iden_label.grid(column=0, row=0, padx=10, pady=5)
-        iden_box = ttk.Entry(self, textvariable=iden)
-        iden_box.grid(column=1, row=0, sticky="WE", padx=10, pady=5)
+        self.iden_box = ttk.Entry(self, textvariable=iden)
+        self.iden_box.grid(column=1, row=0, sticky="WE", padx=10, pady=5)
 
         name_label = ttk.Label(self, text="Name:")
         name_label.grid(column=0, row=1, padx=10, pady=5)
-        name_box = ttk.Entry(self, textvariable=name)
-        name_box.grid(column=1, row=1, sticky="WE", padx=10, pady=5)
+        self.name_box = ttk.Entry(self, textvariable=name)
+        self.name_box.grid(column=1, row=1, sticky="WE", padx=10, pady=5)
 
         description_label = ttk.Label(self, text="Description:")
         description_label.grid(column=0, row=2, padx=10, pady=5)
-        description_box = ttk.Entry(self, textvariable=description)
-        description_box.grid(column=1, row=2, sticky="WE", padx=10, pady=5)
+        self.description_box = ttk.Entry(self, textvariable=description)
+        self.description_box.grid(column=1, row=2, sticky="WE", padx=10, pady=5)
 
         time_limit_label = ttk.Label(self, text="Time Limit:")
         time_limit_label.grid(column=0, row=3, padx=10, pady=5)
-        time_limit_box = ttk.Entry(self, textvariable=time_limit)
-        time_limit_box.grid(column=1, row=3, sticky="WE", padx=10, pady=5)
+        self.time_limit_box = ttk.Entry(self, textvariable=time_limit)
+        self.time_limit_box.grid(column=1, row=3, sticky="WE", padx=10, pady=5)
 
         strikes_label = ttk.Label(self, text="Strikes:")
         strikes_label.grid(column=0, row=4, padx=10, pady=5)
-        strikes_box = ttk.Entry(self, textvariable=strikes)
-        strikes_box.grid(column=1, row=4, sticky="WE", padx=10, pady=5)
+        self.strikes_box = ttk.Entry(self, textvariable=strikes)
+        self.strikes_box.grid(column=1, row=4, sticky="WE", padx=10, pady=5)
 
         needy_activation_time_label = ttk.Label(self, text="Needy Activation Time:")
         needy_activation_time_label.grid(column=0, row=5, padx=10, pady=5)
-        needy_activation_time_box = ttk.Entry(self, textvariable=needy_activation_time)
-        needy_activation_time_box.grid(column=1, row=5, sticky="WE", padx=10, pady=5)
+        self.needy_activation_time_box = ttk.Entry(self, textvariable=needy_activation_time)
+        self.needy_activation_time_box.grid(column=1, row=5, sticky="WE", padx=10, pady=5)
 
         widgets_label = ttk.Label(self, text="Widget Amount:")
         widgets_label.grid(column=0, row=6, padx=10, pady=5)
-        widgets_box = ttk.Entry(self, textvariable=widgets)
-        widgets_box.grid(column=1, row=6, sticky="WE", padx=10, pady=5)
+        self.widgets_box = ttk.Entry(self, textvariable=widgets)
+        self.widgets_box.grid(column=1, row=6, sticky="WE", padx=10, pady=5)
 
         # TODO fix spaghetti code that was made in an attempt to make these look nice, don't ask what I was going for
-        front_only_check = ttk.Checkbutton(self, text="Front Only", variable=front_only, onvalue=1, offvalue=0).grid(column=1, row=7, padx=10, pady=10)
-        pacing_check = ttk.Checkbutton(self, text="Pacing Events", variable=pacing, onvalue=1, offvalue=0).grid(column=1, row=7, sticky="E", padx=10, pady=10, ipadx=100)
+        front_only_check = ttk.Checkbutton(self, text="Front Only", variable=self.front_only, onvalue=1, offvalue=0).grid(column=1, row=7, padx=10, pady=10)
+        pacing_check = ttk.Checkbutton(self, text="Pacing Events", variable=self.pacing, onvalue=1, offvalue=0).grid(column=1, row=7, sticky="E", padx=10, pady=10, ipadx=100)
 
         # ScrolledText comes with a scrollbar, but it's only for up and down, so I add a Scrollbar to go left and right in case you are using spaces/tabs to separate
         modules_label = ttk.Label(self, text="Module List:")
         modules_label.grid(column=0, row=8, padx=10, pady=5)
-        modules_box = ScrolledText(self, width=10, height=10, wrap=tk.NONE)
-        modules_box.grid(column=1, row=8, sticky="NSEW", padx=10, pady=0)
-        modules_scrollbar = ttk.Scrollbar(self, orient='horizontal', command=modules_box.xview)
+        self.modules_box = ScrolledText(self, width=10, height=10, wrap=tk.NONE)
+        self.modules_box.grid(column=1, row=8, sticky="NSEW", padx=10, pady=0)
+        modules_scrollbar = ttk.Scrollbar(self, orient='horizontal', command=self.modules_box.xview)
         modules_scrollbar.grid(column=1, row=9, sticky="EW", padx=10)
-        modules_box["xscrollcommand"] = modules_scrollbar.set
+        self.modules_box["xscrollcommand"] = modules_scrollbar.set
 
         # TODO make the sheet usable *before* you select this, no idea why this happens
         separator_label = ttk.Label(self, text="Separator:")
@@ -219,21 +249,70 @@ class Gui(tk.Tk):
         separator_box['state'] = 'readonly'
         separator_box.grid(column=1, row=10, sticky="W", padx=10, pady=5)
 
+        open_dmg_button = ttk.Button(self, text = "Open DMG mission", command = self.parse_dmg).grid(column=1, row=11, padx=10, pady=5)
+
         # runs createMission() with all of the info in the other boxes when pressed
-        enter_button = ttk.Button(self, text="Create Asset File", command=lambda: self.createMission(iden.get(), name.get(), description.get(), time_limit.get(), strikes.get(), needy_activation_time.get(), front_only.get(), widgets.get(), modules_box.get("1.0", "end"), separator.get(), pacing.get())).grid(column=1, row=11, padx=10, pady=5)
+        enter_button = ttk.Button(self, text="Create Asset File", command=lambda: self.createMission(iden.get(), name.get(), description.get(), time_limit.get(), strikes.get(), needy_activation_time.get(), self.front_only.get(), widgets.get(), self.modules_box.get("1.0", tk.END), separator.get(), self.pacing.get())).grid(column=1, row=12, padx=10, pady=5)
 
         # shows you the defaults and some important notes before you start
         showinfo(title="Info", message="Defaults:\n  ID: mission\n  Name: Mission\n  Description: a mission\n  Time Limit: 300\n  Strikes: 3\n  Needy Activation Time: 90\n  Widgets: 5\n\nNote: All times are in seconds.\n\nThe module list should use the module ID's, which can be found at ktane.timwi.de")
 
         # this is important for the tk gui, I imagine it just runs a constant update
         self.mainloop()
-
+    
+    #Select DMG mission file and parse its values into the GUI inputs
+    def parse_dmg(self):
+        default_values = AssetFile()
+        
+        #Select and open file
+        filename = askopenfilename(title = "Select DMG mission")
+        default_values.iden = path.basename(filename).split(".")[0]    #Set iden to be the name of the selected file
+        lines = []
+        try:
+            with open(filename, "r") as mission_file:
+                lines = mission_file.readlines()
+        except Exception as e:
+            print(format_exc())
+            showerror(title="Mission read error", message="Couldn't read the selected file. Are you sure it's a DMG mission? ({})".format(type(e).__name__))
+            return
+        
+        #For each line, detect which property of a mission it matches, and change the value of the mission according to that
+        for line in lines:
+            line = line.strip()
+            skip = False
+            for pattern in DMG_IGNORE:
+                if line.startswith(pattern):
+                    skip = True
+                    break
+            if skip:
+                continue
+            if line in DMG_TOGGLABLES:    #Change checkbox value
+                setattr(default_values, *DMG_TOGGLABLES[line])
+                continue
+            for regex in DMG_LINE_TYPES:  #Change entry value
+                match = re.search(regex, line)
+                if match != None:
+                    field = DMG_LINE_TYPES[regex]
+                    value = match.group(1)
+                    if field == "time_limit":    #Calculate seconds
+                        timesplit = tuple(map(int, match.string.split(":")))
+                        value = timesplit[0]*3600+timesplit[1]*60+timesplit[2] if len(timesplit)==3 else timesplit[0]*60+timesplit[1]
+                    if field == "modules":    #New modules have to be joined to the old ones
+                        value = (default_values.modules + "\n" + match.string).strip()
+                    setattr(default_values, field, value)
+                    break
+        for regex in DMG_LINE_TYPES:    #Finalize entry values
+            field = DMG_LINE_TYPES[regex]
+            change_text(getattr(self, field+"_box"), getattr(default_values, field))
+        change_text(self.iden_box, default_values.iden)    #Iden doesn't have an entry
+        for variable in DMG_TOGGLABLES:    #Finalize checkbox values
+            var_name = DMG_TOGGLABLES[variable][0]
+            getattr(self, var_name).set(getattr(default_values, var_name))
 
     # ran when enter button is pressed, creates a new AssetFile and then tells you it worked if it passes the sanity check
-    def createMission(self, iden, name, desciption, time_limit, strikes, needy_activation_time, front_only, widgets, modules, separator, pacing):
-
+    def createMission(self, iden, name, description, time_limit, strikes, needy_activation_time, front_only, widgets, modules, separator, pacing):
         created_mission = AssetFile()
-        if created_mission.enter(iden, name, desciption, time_limit, strikes, needy_activation_time, front_only, widgets, modules, separator, pacing):
+        if created_mission.enter(iden, name, description, time_limit, strikes, needy_activation_time, front_only, widgets, modules, separator, pacing):
             showinfo(title="You did it!", message="Mission file created and downloaded.")
 
 
